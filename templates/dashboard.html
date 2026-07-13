@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - LLM Benchmark{% endblock %}
+
+{% block content %}
+<h2 class="mb-4"><i class="bi bi-speedometer2 text-info"></i> Dashboard</h2>
+
+<div class="row g-4 mb-4">
+            <div class="col-md-3 col-sm-6">
+                <div class="card h-100 border-secondary">
+                    <div class="card-body text-center">
+                        <i class="bi bi-box-seam text-info display-6"></i>
+                        <h3 class="mt-2" id="totalModels">-</h3>
+                        <p class="text-muted mb-0">Tested Models</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-sm-6">
+                <div class="card h-100 border-secondary">
+                    <div class="card-body text-center">
+                        <i class="bi bi-trophy-fill text-warning display-6"></i>
+                        <h5 class="mt-2 text-success" id="bestModel">-</h5>
+                        <p class="text-muted mb-0">Best Model</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-sm-6">
+                <div class="card h-100 border-secondary">
+                    <div class="card-body text-center">
+                        <i class="bi bi-lightning-fill text-success display-6"></i>
+                        <h5 class="mt-2" id="fastestModel">-</h5>
+                        <p class="text-muted mb-0">Fastest Model</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 col-sm-6">
+                <div class="card h-100 border-secondary">
+                    <div class="card-body text-center">
+                        <i class="bi bi-code-slash text-info display-6"></i>
+                        <h5 class="mt-2" id="codingModel">-</h5>
+                        <p class="text-muted mb-0">Best Coding Model</p>
+                    </div>
+                </div>
+            </div>
+</div>
+
+<div class="row g-4 mb-4">
+    <div class="col-md-6">
+        <div class="card border-secondary">
+            <div class="card-header border-secondary">
+                <i class="bi bi-clock-history"></i> Last Benchmark
+            </div>
+            <div class="card-body" id="lastBenchmark">
+                <p class="text-muted">No benchmarks yet.</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card border-secondary">
+            <div class="card-header border-secondary">
+                <i class="bi bi-exclamation-triangle"></i> Last Error
+            </div>
+            <div class="card-body" id="lastError">
+                <p class="text-muted">No errors known.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="d-flex gap-3 flex-wrap">
+    <a href="/benchmark" class="btn btn-primary btn-lg">
+        <i class="bi bi-plus-circle"></i> Start New Benchmark
+    </a>
+    <a href="/ranking" class="btn btn-outline-warning btn-lg">
+        <i class="bi bi-trophy"></i> Show Ranking
+    </a>
+    <a href="/results" class="btn btn-outline-info btn-lg">
+        <i class="bi bi-list-check"></i> Show Results
+    </a>
+    <a href="/comparisons" class="btn btn-outline-info btn-lg">
+        <i class="bi bi-bar-chart-line"></i> Show Comparisons
+    </a>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    loadDashboardStats();
+</script>
+{% endblock %}

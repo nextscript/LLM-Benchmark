@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+
+{% block title %}Comparisons - LLM Benchmark{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap align-items-end justify-content-between gap-3 mb-4">
+    <div>
+        <h2 class="mb-1"><i class="bi bi-bar-chart-line text-info"></i> Detailed Score Comparisons</h2>
+        <p class="text-muted mb-0">Blind Analysis vs. Self-Validation, category scores, Truth-Audit separately, and run-to-run changes.</p>
+    </div>
+    <div class="comparison-controls">
+        <select class="form-select form-select-sm" id="comparisonModelFilter" aria-label="Filter by model">
+            <option value="all">All models</option>
+        </select>
+        <select class="form-select form-select-sm" id="comparisonCategoryFilter" aria-label="Filter by category">
+            <option value="all">All categories</option>
+        </select>
+    </div>
+</div>
+
+<div class="row g-4 mb-4 comparison-summary" id="comparisonSummary">
+    <div class="col-md-3 col-sm-6">
+        <div class="card border-secondary h-100">
+            <div class="card-body">
+                <div class="text-muted small">Results</div>
+                <div class="comparison-stat" id="comparisonResultCount">-</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 col-sm-6">
+        <div class="card border-secondary h-100">
+            <div class="card-body">
+                <div class="text-muted small">Avg Score</div>
+                <div class="comparison-stat" id="comparisonAvgScore">-</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 col-sm-6">
+        <div class="card border-secondary h-100">
+            <div class="card-body">
+                <div class="text-muted small">Self-Val Improvement</div>
+                <div class="comparison-stat" id="comparisonAvgSelfDelta">-</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3 col-sm-6">
+        <div class="card border-secondary h-100">
+            <div class="card-body">
+                <div class="text-muted small">Run Deltas</div>
+                <div class="comparison-stat" id="comparisonRunDeltaCount">-</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4 mb-4 comparison-leaders">
+    <div class="col-lg-4">
+        <div class="card border-secondary h-100">
+            <div class="card-header"><i class="bi bi-trophy-fill text-warning"></i> Best Model</div>
+            <div class="card-body" id="comparisonBestModel">
+                <div class="text-muted">-</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-4">
+        <div class="card border-secondary h-100">
+            <div class="card-header"><i class="bi bi-lightning-fill text-success"></i> Fastest Model</div>
+            <div class="card-body" id="comparisonFastestModel">
+                <div class="text-muted">-</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-4">
+        <div class="card border-secondary h-100">
+            <div class="card-header"><i class="bi bi-code-slash text-info"></i> Best Coding Model</div>
+            <div class="card-body" id="comparisonBestCodingModel">
+                <div class="text-muted">-</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4">
+    <div class="col-xl-7">
+        <div class="card border-secondary chart-card">
+            <div class="card-header"><i class="bi bi-bar-chart"></i> Badge Scores by Model</div>
+            <div class="card-body">
+                <canvas id="categoryScoreCanvas" class="comparison-canvas" height="360"></canvas>
+                <div class="chart-legend mt-2">
+                    <span><span class="legend-swatch badge-good-swatch"></span> good</span>
+                    <span><span class="legend-swatch badge-medium-swatch"></span> medium</span>
+                    <span><span class="legend-swatch badge-bad-swatch"></span> bad</span>
+                    <span><span class="legend-swatch badge-none-swatch"></span> none</span>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-xl-5">
+        <div class="card border-secondary chart-card">
+            <div class="card-header"><i class="bi bi-activity"></i> Blind Analysis vs. Self-Validation</div>
+            <div class="card-body">
+                <canvas id="selfValidationCanvas" class="comparison-canvas" height="360"></canvas>
+                <div class="chart-legend mt-2">
+                    <span><span class="legend-swatch comparison-blind-swatch"></span> Blind Analysis</span>
+                    <span><span class="legend-swatch comparison-self-swatch"></span> Self-Validation</span>
+                    <span><span class="legend-swatch bg-success"></span> better</span>
+                    <span><span class="legend-swatch bg-danger"></span> worse</span>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-xl-7">
+        <div class="card border-secondary chart-card">
+            <div class="card-header"><i class="bi bi-clock-history"></i> Run History by Model and Category</div>
+            <div class="card-body">
+                <canvas id="runHistoryCanvas" class="comparison-canvas" height="360"></canvas>
+            </div>
+        </div>
+    </div>
+    <div class="col-xl-5">
+        <div class="card border-secondary chart-card">
+            <div class="card-header"><i class="bi bi-shield-check"></i> Truth-Audit Separate</div>
+            <div class="card-body">
+                <canvas id="truthAuditCanvas" class="comparison-canvas" height="360"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card border-secondary mt-4">
+    <div class="card-header"><i class="bi bi-arrow-left-right"></i> Run-to-Run Comparison</div>
+    <div class="table-responsive">
+        <table class="table table-dark table-hover table-striped align-middle mb-0 comparison-table">
+            <thead>
+                <tr>
+                    <th>Model</th>
+                    <th>Category</th>
+                    <th>Prompt</th>
+                    <th>Current Run</th>
+                    <th>Previous Run</th>
+                    <th>Score Delta</th>
+                    <th>Self-Val Delta</th>
+                    <th>Status</th>
+                    <th>Date</th>
+                </tr>
+            </thead>
+            <tbody id="runComparisonBody">
+                <tr><td colspan="9" class="text-center text-muted">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        loadComparisons();
+    });
+</script>
+{% endblock %}

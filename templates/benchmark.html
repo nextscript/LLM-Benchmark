@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+
+{% block title %}Start Benchmark - LLM Benchmark{% endblock %}
+
+{% block content %}
+<h2 class="mb-4"><i class="bi bi-play-circle text-info"></i> Start Benchmark</h2>
+
+<div class="row">
+    <div class="col-lg-7">
+        <div class="card border-secondary">
+            <div class="card-header border-secondary">
+                <i class="bi bi-gear"></i> Configuration
+            </div>
+            <div class="card-body">
+                <form id="benchmarkForm">
+                    <div class="mb-3">
+                        <label for="model_name" class="form-label">Model Name *</label>
+                        <input type="text" class="form-control" id="model_name" name="model_name" required
+                               placeholder="e.g. Llama 3.1 8B">
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="server_url" class="form-label">llama-server URL</label>
+                        <div class="input-group">
+                            <input type="url" class="form-control" id="server_url" name="server_url"
+                                   value="http://127.0.0.1:8080" placeholder="http://127.0.0.1:8080">
+                            <button class="btn btn-outline-secondary" type="button" id="loadLlamaConfigBtn">
+                                <i class="bi bi-arrow-clockwise"></i> Load
+                            </button>
+                        </div>
+                        <div class="form-text" id="llamaConfigStatus">Load values from llama-server.</div>
+                    </div>
+
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label for="context_size" class="form-label">Context Size</label>
+                            <input type="number" class="form-control" id="context_size" name="context_size"
+                                   value="4096" min="256" step="256"
+                                   placeholder="e.g. 4096">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="max_tokens" class="form-label">Max Tokens</label>
+                            <input type="number" class="form-control" id="max_tokens" name="max_tokens"
+                                   value="512" min="1" step="1"
+                                   placeholder="e.g. 512">
+                            <div class="form-text">Loaded from llama.cpp batch size.</div>
+                        </div>
+                    </div>
+
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label for="temperature" class="form-label">Temperature</label>
+                            <input type="text" class="form-control" id="temperature" name="temperature"
+                                   value="0.7" inputmode="decimal" pattern="[0-9]+([,.][0-9]+)?">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="top_p" class="form-label">Top-P</label>
+                            <input type="text" class="form-control" id="top_p" name="top_p"
+                                   value="0.9" inputmode="decimal" pattern="[0-9]+([,.][0-9]+)?">
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="num_runs" class="form-label">Number of Runs</label>
+                        <select class="form-select" id="num_runs" name="num_runs">
+                            <option value="1" selected>1</option>
+                            <option value="2">2</option>
+                            <option value="3">3</option>
+                            <option value="5">5</option>
+                        </select>
+                        <div class="form-text">Multiple runs for more stable results.</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="enable_self_validation" name="enable_self_validation" value="true" checked>
+                            <label class="form-check-label" for="enable_self_validation">
+                                Self-Validation (Run 2)
+                            </label>
+                        </div>
+                        <div class="form-text">Model reviews and improves its own answer (doubles test time, increases accuracy).</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="prompt_category" class="form-label">Test Category</label>
+                        <select class="form-select" id="prompt_category">
+                            <option value="all" selected>All Tests</option>
+                            <option value="general">General Tests</option>
+                            <option value="coding_language">Coding Languages</option>
+                            <option value="game_engine">Game Engine</option>
+                            <option value="songwriting_tests">Songwriting Tests</option>
+                            <option value="truth_audit">Truth-Audit</option>
+                        </select>
+                        <div class="form-text">Category filter.</div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="prompt_keys" class="form-label">Test Prompts</label>
+                        <select class="form-select" id="prompt_keys" name="prompt_keys" multiple size="18">
+                            <option value="coding" selected>Coding Test</option>
+                            <option value="reasoning" selected>Reasoning Test</option>
+                            <option value="long_context">Long Context Test</option>
+                            <option value="german_text">German Text Test</option>
+                            <option value="json_test">JSON Test</option>
+                        </select>
+                        <div class="form-text">Hold Ctrl/Cmd to select multiple. Load more via category filter.</div>
+                    </div>
+
+                    <div class="d-flex gap-2">
+                                <button type="submit" class="btn btn-primary btn-lg" id="startBtn">
+                            <i class="bi bi-play-fill"></i> Start Benchmark
+                        </button>
+                        <button type="button" class="btn btn-danger btn-lg" id="abortBtn" style="display:none;">
+                            <i class="bi bi-stop-fill"></i> Abort
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-5">
+        <div class="card border-secondary mb-3" id="statusCard" style="display:none;">
+            <div class="card-header border-secondary">
+                <i class="bi bi-activity"></i> Live Status
+            </div>
+            <div class="card-body">
+                <div class="d-flex align-items-center mb-3">
+                    <div class="spinner-border text-info me-3" role="status" id="statusSpinner">
+                        <span class="visually-hidden">Running...</span>
+                    </div>
+                    <div>
+                        <h5 class="mb-0" id="statusTitle">Benchmark running...</h5>
+                        <small class="text-muted" id="statusStep">-</small>
+                    </div>
+                </div>
+
+                <div class="progress mb-2" style="height: 8px;">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated bg-info"
+                         id="progressBar" style="width: 0%"></div>
+                </div>
+                <div class="d-flex justify-content-between text-muted small">
+                    <span id="progressPercent">0%</span>
+                    <span id="statusTimestamp">-</span>
+                </div>
+
+                <div class="mt-3">
+                    <div class="d-flex justify-content-between mb-1">
+                        <span class="text-muted">Tokens/s:</span>
+                        <strong id="tokensPerSec" class="text-info">-</strong>
+                    </div>
+                    <div class="d-flex justify-content-between mb-1">
+                        <span class="text-muted">Decoded Tokens:</span>
+                        <strong id="decodedTokens">-</strong>
+                    </div>
+                    <div class="d-flex justify-content-between mb-1">
+                        <span class="text-muted">Metric Source:</span>
+                        <strong id="metricSource">-</strong>
+                    </div>
+                    <div class="d-flex justify-content-between mb-1">
+                        <span class="text-muted">Elapsed:</span>
+                        <strong id="elapsedTime">00:00</strong>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card border-secondary">
+            <div class="card-header border-secondary">
+                <i class="bi bi-server"></i> Server Status
+            </div>
+            <div class="card-body d-flex align-items-center">
+                <span class="spinner-border spinner-border-sm me-2" id="healthSpinner"></span>
+                <span id="healthText">Checking connection...</span>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        checkServerHealth();
+        loadPrompts();
+        initBenchmarkForm();
+    });
+</script>
+{% endblock %}
