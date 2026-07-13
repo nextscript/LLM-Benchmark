@@ -507,6 +507,59 @@ def get_engine_badges_by_model() -> Dict[str, List[Dict[str, Any]]]:
         conn.close()
 
 
+def get_best_coding_model_by_badges() -> Optional[Dict[str, Any]]:
+    """Find the model with the most 'good' badges across General, Coding Languages, and Game Engine categories.
+
+    A badge (one per general test, programming language, or engine skill) is
+    'good' when the model's average score across all its passes for that
+    item is >= 75 - the same rule the badge displays elsewhere in the UI use
+    (see getAllLanguageBadges/getAllEngineBadges/getAllGeneralBadges in app.js).
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT model_name, prompt_category, prompt_key, final_score, "
+            "programming_language, language_score, engine_skill, engine_score "
+            "FROM benchmark_results WHERE status = 'finished'"
+        ).fetchall()
+
+        # model_name -> (category, item_key) -> list of scores
+        scores: Dict[str, Dict[tuple, list]] = {}
+        for row in rows:
+            model = row["model_name"]
+            model_scores = scores.setdefault(model, {})
+
+            if row["prompt_category"] == "general" and row["prompt_key"] and row["final_score"] is not None:
+                model_scores.setdefault(("general", row["prompt_key"]), []).append(row["final_score"])
+
+            if row["programming_language"] and row["language_score"] is not None:
+                model_scores.setdefault(("coding", row["programming_language"].lower()), []).append(row["language_score"])
+
+            if row["engine_skill"] and row["engine_score"] is not None:
+                model_scores.setdefault(("engine", row["engine_skill"].lower()), []).append(row["engine_score"])
+
+        best: Optional[Dict[str, Any]] = None
+        for model, model_scores in scores.items():
+            counts = {"general": 0, "coding": 0, "engine": 0}
+            for (category, _item), values in model_scores.items():
+                if sum(values) / len(values) >= 75:
+                    counts[category] += 1
+
+            total_good_badges = counts["general"] + counts["coding"] + counts["engine"]
+            if best is None or total_good_badges > best["total_good_badges"]:
+                best = {
+                    "model_name": model,
+                    "total_good_badges": total_good_badges,
+                    "general_badges": counts["general"],
+                    "coding_badges": counts["coding"],
+                    "engine_badges": counts["engine"],
+                }
+
+        return best
+    finally:
+        conn.close()
+
+
 def get_stats() -> Dict[str, Any]:
     """Return statistics for the dashboard."""
     conn = get_connection()
@@ -530,12 +583,8 @@ def get_stats() -> Dict[str, Any]:
         ).fetchone()
         stats["fastest_model"] = dict(row) if row else None
 
-        row = conn.execute(
-            "SELECT model_name, AVG(final_score) AS avg_final_score, COUNT(*) AS test_count "
-            "FROM benchmark_results WHERE status='finished' AND prompt_category='coding_language' "
-            "GROUP BY model_name ORDER BY avg_final_score DESC LIMIT 1"
-        ).fetchone()
-        stats["best_coding_model"] = dict(row) if row else None
+        # Get best coding model by badge count
+        stats["best_coding_model"] = get_best_coding_model_by_badges()
 
         row = conn.execute(
             "SELECT * FROM benchmark_results ORDER BY created_at DESC LIMIT 1"

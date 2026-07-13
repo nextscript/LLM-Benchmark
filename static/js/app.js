@@ -320,11 +320,13 @@ async function loadDashboardStats() {
         }
 
         if (stats.best_coding_model) {
-            const avgScore = stats.best_coding_model.avg_final_score ? stats.best_coding_model.avg_final_score.toFixed(2) : '-';
-            const testCount = stats.best_coding_model.test_count || 0;
+            const badgeInfo = stats.best_coding_model;
+            const totalBadges = Object.keys(languageIconMap).length +
+                               Object.keys(generalTestBadgeMap).length +
+                               Object.keys(engineSkillLabelMap).length;
             el('codingModel').innerHTML = `
-                <div>${esc(stats.best_coding_model.model_name)}</div>
-                <small class="text-muted">${avgScore} avg score (${testCount} tests)</small>
+                <div>${esc(badgeInfo.model_name)}</div>
+                <small class="text-muted">${badgeInfo.total_good_badges}/${totalBadges} good badges total</small>
             `;
         } else {
             el('codingModel').textContent = '-';
@@ -1081,7 +1083,7 @@ async function loadResults() {
         
         const grouped = groupByModelName(results);
         grouped.sort((a, b) => (b.final_score || 0) - (a.final_score || 0));
-        
+
         tbody.innerHTML = grouped.map((r, idx) => {
             const allResults = r._allResults || [r];
             return `
@@ -1257,11 +1259,7 @@ function renderComparisonSummary(results, runDeltas) {
 function renderComparisonLeaders(results) {
     const bestModel = bestModelByAverage(results, 'final_score', 'desc');
     const fastestModel = bestModelByAverage(results, 'generation_tokens_per_second', 'desc');
-    const bestCodingModel = bestModelByAverage(
-        results.filter(r => normalizedCategory(r) === 'coding_language'),
-        'final_score',
-        'desc'
-    );
+    const bestCodingModel = bestModelByGoodBadges(results);
 
     renderLeaderCard('comparisonBestModel', bestModel, {
         mainMetric: 'avg_score',
@@ -1274,11 +1272,91 @@ function renderComparisonLeaders(results) {
         secondaryMetric: 'avg_score',
         secondaryLabel: 'avg score',
     });
-    renderLeaderCard('comparisonBestCodingModel', bestCodingModel, {
-        mainMetric: 'avg_score',
-        mainLabel: 'avg score',
-        secondaryMetric: 'test_count',
+    renderBadgeLeaderCard('comparisonBestCodingModel', bestCodingModel);
+}
+
+// A badge (general test / programming language / engine skill) counts as
+// 'good' when the model's average score across all its passes for that item
+// is >= 75 - matching getAllGeneralBadges/getAllLanguageBadges/getAllEngineBadges.
+function countGoodBadges(results) {
+    const generalScores = new Map();
+    const languageScores = new Map();
+    const engineScores = new Map();
+
+    results.forEach(r => {
+        if (r.prompt_category === 'general' && r.prompt_key) {
+            const key = r.prompt_key;
+            if (!generalScores.has(key)) generalScores.set(key, []);
+            generalScores.get(key).push(Number(r.final_score || 0));
+        }
+        if (r.programming_language) {
+            const key = String(r.programming_language).toLowerCase();
+            if (!languageScores.has(key)) languageScores.set(key, []);
+            languageScores.get(key).push(Number(r.language_score || 0));
+        }
+        if (r.engine_skill) {
+            const key = String(r.engine_skill).toLowerCase();
+            if (!engineScores.has(key)) engineScores.set(key, []);
+            engineScores.get(key).push(Number(r.engine_score || 0));
+        }
     });
+
+    const countGood = (map) => {
+        let good = 0;
+        map.forEach(scores => {
+            const avgScore = scores.reduce((sum, v) => sum + v, 0) / scores.length;
+            if (avgScore >= 75) good++;
+        });
+        return good;
+    };
+
+    const general = countGood(generalScores);
+    const coding = countGood(languageScores);
+    const engine = countGood(engineScores);
+    return { general, coding, engine, total: general + coding + engine };
+}
+
+function bestModelByGoodBadges(results) {
+    const groups = new Map();
+    results.forEach(r => {
+        const model = r.model_name || 'Unknown model';
+        if (!groups.has(model)) groups.set(model, []);
+        groups.get(model).push(r);
+    });
+
+    let best = null;
+    groups.forEach((modelResults, model) => {
+        const counts = countGoodBadges(modelResults);
+        if (!best || counts.total > best.total_good_badges) {
+            best = {
+                model_name: model,
+                total_good_badges: counts.total,
+                general_badges: counts.general,
+                coding_badges: counts.coding,
+                engine_badges: counts.engine,
+            };
+        }
+    });
+    return best;
+}
+
+function renderBadgeLeaderCard(id, leader) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (!leader) {
+        el.innerHTML = '<div class="text-muted">No matching results.</div>';
+        return;
+    }
+
+    const totalPossible = Object.keys(languageIconMap).length +
+                         Object.keys(generalTestBadgeMap).length +
+                         Object.keys(engineSkillLabelMap).length;
+
+    el.innerHTML = `
+        <div class="comparison-leader-name">${esc(leader.model_name)}</div>
+        <div class="comparison-leader-metric">${leader.total_good_badges}/${totalPossible} <span>good badges</span></div>
+        <div class="text-muted small">${leader.general_badges} general, ${leader.coding_badges} coding, ${leader.engine_badges} engine</div>
+    `;
 }
 
 function bestModelByAverage(results, field, direction = 'desc') {
