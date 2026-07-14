@@ -337,19 +337,6 @@ def _build_result(timings: dict, content: str, prompt_tokens_fallback: int,
         "first_token_latency": round(first_token_latency, 2) if first_token_latency else None,
         "avg_token_latency": round(avg_token_latency, 4),
     }
-    """Check if the llama-server is reachable."""
-    try:
-        resp = requests.get(f"{server_url}/health", timeout=timeout)
-        return resp.status_code == 200
-    except requests.exceptions.ConnectionError:
-        logger.warning("llama-server not reachable at %s", server_url)
-        return False
-    except requests.exceptions.Timeout:
-        logger.warning("Timeout during connection test to %s", server_url)
-        return False
-    except Exception as e:
-        logger.error("Error during connection test: %s", e)
-        return False
 
 
 def _coerce_float(value: Any) -> Optional[float]:
