@@ -2,11 +2,13 @@
 llama-server Client: Communication with the OpenAI-compatible llama-server.
 """
 
+import json
+import re
 import time
 import logging
 from pathlib import PurePath
 import requests
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -14,8 +16,327 @@ DEFAULT_SERVER_URL = "http://127.0.0.1:8080"
 DEFAULT_TIMEOUT = 600
 _live_slot_snapshots: dict[str, tuple[int, float]] = {}
 
+# Tags used by various reasoning chat templates to delimit model "thinking".
+# Open and close variants must stay aligned by index.
+_THINK_OPEN_TAGS = (
+    "<think>",
+    "<thinking>",
+    "<reasoning>",
+    "<reasoning_content>",
+    "<|thinking|>",
+    "<thought>",
+    "<|begin_of_thought|>",
+)
+_THINK_CLOSE_TAGS = (
+    "</think>",
+    "</thinking>",
+    "</reasoning>",
+    "</reasoning_content>",
+    "<|/thinking|>",
+    "</thought>",
+    "<|end_of_thought|>",
+)
+# Build one regex that matches any tag, keep group(1) as the matched tag.
+_THINK_TAG_RE = re.compile(
+    "|".join(re.escape(t) for t in (*_THINK_OPEN_TAGS, *_THINK_CLOSE_TAGS)),
+    re.DOTALL,
+)
+_TAG_TO_OPENS = {t: "open" for t in _THINK_OPEN_TAGS}
+_TAG_TO_OPENS.update({t: "close" for t in _THINK_CLOSE_TAGS})
+
+
+def _split_chunk_by_thinking(chunk: str, in_thinking: bool):
+    """Split a content chunk into (kind, text) pairs based on reasoning tags.
+
+    Returns (list_of_pairs, new_in_thinking_state). Tags that span two chunks
+    are handled by returning the unmatched tail as plain text of the current
+    kind (rare in practice).
+    """
+    parts: list[tuple[str, str]] = []
+    pos = 0
+    while pos < len(chunk):
+        m = _THINK_TAG_RE.search(chunk, pos)
+        if not m:
+            parts.append(("thinking" if in_thinking else "content", chunk[pos:]))
+            break
+        if m.start() > pos:
+            parts.append(("thinking" if in_thinking else "content", chunk[pos:m.start()]))
+        tag = m.group(0)
+        if _TAG_TO_OPENS.get(tag) == "open":
+            in_thinking = True
+        elif _TAG_TO_OPENS.get(tag) == "close":
+            in_thinking = False
+        else:
+            # DeepSeek-style "tidi" tag toggles both states; flip
+            in_thinking = not in_thinking
+        pos = m.end()
+    return parts, in_thinking
+
+
+def _detect_repetition(content: str, min_unit_len: int = 16, min_repeats: int = 4) -> bool:
+    """Return True if the tail of `content` shows an obvious repetition loop.
+
+    Looks for a unit of length [min_unit_len .. 4*min_unit_len] that repeats at
+    least `min_repeats` times back-to-back at the end of the string.
+    """
+    if not content:
+        return False
+    needed = min_unit_len * min_repeats
+    if len(content) < needed:
+        return False
+
+    max_unit_len = min(min_unit_len * 32, len(content) // min_repeats)
+    for unit_len in range(min_unit_len, max_unit_len + 1):
+        unit = content[-unit_len:]
+        if not unit.strip():
+            continue
+        count = 1
+        i = len(content) - unit_len
+        while i - unit_len >= 0 and content[i - unit_len:i] == unit:
+            count += 1
+            i -= unit_len
+            if count >= min_repeats:
+                return True
+    return False
+
+
+def _strip_thinking_tags(content: str) -> tuple[str, str]:
+    """Remove thinking blocks from content and return (clean_content, thinking).
+
+    Used for non-streaming responses where reasoning tags are embedded directly
+    in the content string.
+    """
+    if not content:
+        return content, ""
+    thinking_parts: list[str] = []
+    clean_parts: list[str] = []
+    in_thinking = False
+    pos = 0
+    while pos < len(content):
+        m = _THINK_TAG_RE.search(content, pos)
+        if not m:
+            (thinking_parts if in_thinking else clean_parts).append(content[pos:])
+            break
+        if m.start() > pos:
+            (thinking_parts if in_thinking else clean_parts).append(content[pos:m.start()])
+        tag = m.group(0)
+        if _TAG_TO_OPENS.get(tag) == "open":
+            in_thinking = True
+        elif _TAG_TO_OPENS.get(tag) == "close":
+            in_thinking = False
+        else:
+            in_thinking = not in_thinking
+        pos = m.end()
+    return "".join(clean_parts), "".join(thinking_parts)
+
 
 def check_health(server_url: str, timeout: int = 10) -> bool:
+    """Check if the llama-server is reachable."""
+    try:
+        resp = requests.get(f"{server_url}/health", timeout=timeout)
+        return resp.status_code == 200
+    except requests.exceptions.ConnectionError:
+        logger.warning("llama-server not reachable at %s", server_url)
+        return False
+    except requests.exceptions.Timeout:
+        logger.warning("Timeout during connection test to %s", server_url)
+        return False
+    except Exception as e:
+        logger.error("Error during connection test: %s", e)
+        return False
+
+
+def _parse_sse_stream(resp) -> list[dict]:
+    """Yield parsed JSON events from a text/event-stream response."""
+    buffer = ""
+    for chunk in resp.iter_content(chunk_size=None, decode_unicode=True):
+        if not chunk:
+            continue
+        buffer += chunk
+        while "\n" in buffer:
+            line, buffer = buffer.split("\n", 1)
+            line = line.strip()
+            if not line or not line.startswith("data:"):
+                continue
+            data_str = line[5:].strip()
+            if data_str == "[DONE]":
+                continue
+            try:
+                yield json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
+
+
+def send_completion(server_url: str, prompt: str, model_name: str = "benchmark-model",
+                    context_size: int = 4096, max_tokens: int = 512,
+                    temperature: float = 0.7, top_p: float = 0.9,
+                    timeout: int = DEFAULT_TIMEOUT,
+                    on_token: Optional[Callable[[str, str], None]] = None) -> Optional[Dict[str, Any]]:
+    """
+    Send a prompt to the llama-server and return the response with metadata.
+
+    When `on_token(kind, text)` is provided, the request is streamed via SSE and each
+    generated chunk is forwarded live to the callback. `kind` is one of
+    "thinking" (reasoning_content, when present) or "content" (final answer).
+
+    Returns None if the server does not respond.
+    """
+    payload = {
+        "model": model_name,
+        "prompt": prompt,
+        "n_predict": max_tokens,
+        "temperature": temperature,
+        "top_p": top_p,
+        "n_ctx": context_size,
+        "cache_prompt": True,
+    }
+
+    try:
+        logger.info("Sending prompt to %s (model: %s)", server_url, model_name)
+        start_time = time.perf_counter()
+
+        if on_token is not None:
+            # ── Streaming mode ──
+            payload["stream"] = True
+            content_parts: list[str] = []
+            thinking_parts: list[str] = []
+            timings: dict = {}
+            completion_tokens = 0
+            prompt_tokens = 0
+
+            with requests.post(
+                f"{server_url}/completion",
+                json=payload,
+                timeout=timeout,
+                headers={"Content-Type": "application/json"},
+                stream=True,
+            ) as resp:
+                if resp.status_code != 200:
+                    logger.error("Server response error %d: %s", resp.status_code, resp.text[:500])
+                    return None
+                in_thinking = False
+                for event in _parse_sse_stream(resp):
+                    if not isinstance(event, dict):
+                        continue
+                    raw = event.get("content") or event.get("completion") or ""
+                    if raw:
+                        content_parts.append(raw)
+                        # Split into thinking/content based on reasoning tags
+                        parts, in_thinking = _split_chunk_by_thinking(raw, in_thinking)
+                        for kind, text in parts:
+                            if text:
+                                on_token(kind, text)
+                                if kind == "thinking":
+                                    thinking_parts.append(text)
+                    if "timings" in event:
+                        timings = event.get("timings", {}) or {}
+                    if "tokens_predicted" in event:
+                        completion_tokens = event.get("tokens_predicted", completion_tokens)
+                    if "tokens_evaluated" in event:
+                        prompt_tokens = event.get("tokens_evaluated", prompt_tokens)
+                    # Repetition loop detection: abort early if the model is stuck
+                    if _detect_repetition("".join(content_parts)):
+                        on_token("status", "[repetition loop detected, stopping stream]")
+                        break
+
+            elapsed = time.perf_counter() - start_time
+            on_token("status", f"[stream complete: {elapsed:.2f}s]")
+            content = "".join(content_parts)
+            thinking = "".join(thinking_parts)
+            return _build_result(timings, content, prompt_tokens, completion_tokens, elapsed, thinking)
+        else:
+            payload["stream"] = False
+            resp = requests.post(
+                f"{server_url}/completion",
+                json=payload,
+                timeout=timeout,
+                headers={"Content-Type": "application/json"}
+            )
+
+            elapsed = time.perf_counter() - start_time
+
+            if resp.status_code != 200:
+                logger.error("Server response error %d: %s", resp.status_code, resp.text[:500])
+                return None
+
+            data = resp.json()
+            logger.debug("Server response keys: %s", list(data.keys()))
+            logger.debug("Timings: %s", data.get("timings", {}))
+
+            raw_content = data.get("content", "")
+            content, thinking = _strip_thinking_tags(raw_content)
+
+            return _build_result(
+                data.get("timings", {}),
+                content,
+                data.get("tokens_evaluated", 0),
+                data.get("tokens_predicted", 0),
+                elapsed,
+                thinking,
+            )
+    except requests.exceptions.ConnectionError:
+        logger.error("Connection to server failed: %s", server_url)
+        return None
+    except requests.exceptions.Timeout:
+        logger.error("Timeout sending to %s", server_url)
+        return None
+    except Exception as e:
+        logger.error("Unexpected error: %s", e)
+        return None
+
+
+def _build_result(timings: dict, content: str, prompt_tokens_fallback: int,
+                  completion_tokens_fallback: int, elapsed: float,
+                  thinking: str = "") -> Dict[str, Any]:
+    """Build the normalized result dict from raw server data."""
+    prompt_tokens = (
+        timings.get("prompt_n")
+        or timings.get("prompt_eval_count")
+        or prompt_tokens_fallback
+        or 0
+    )
+
+    completion_tokens = (
+        timings.get("eval_count")
+        or timings.get("predicted_n")
+        or completion_tokens_fallback
+        or 0
+    )
+
+    prompt_eval_duration_ns = (
+        timings.get("prompt_eval_duration")
+        or timings.get("prompt_ms", 0) * 1e6
+        or 0
+    )
+
+    eval_duration_ns = (
+        timings.get("eval_duration")
+        or timings.get("predicted_ms", 0) * 1e6
+        or 0
+    )
+
+    prompt_tps = prompt_tokens / (prompt_eval_duration_ns / 1e9) if prompt_eval_duration_ns > 0 else 0.0
+    generation_tps = completion_tokens / (eval_duration_ns / 1e9) if eval_duration_ns > 0 else 0.0
+
+    first_token_latency = None
+    avg_token_latency = 0.0
+    if completion_tokens > 0:
+        generation_time_s = eval_duration_ns / 1e9 if eval_duration_ns > 0 else elapsed
+        first_token_latency = (prompt_eval_duration_ns / 1e9) * 1000 if prompt_eval_duration_ns > 0 else elapsed * 1000
+        avg_token_latency = (generation_time_s * 1000) / completion_tokens
+
+    return {
+        "content": content,
+        "thinking": thinking,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+        "prompt_tokens_per_second": round(prompt_tps, 2),
+        "generation_tokens_per_second": round(generation_tps, 2),
+        "total_duration": elapsed,
+        "first_token_latency": round(first_token_latency, 2) if first_token_latency else None,
+        "avg_token_latency": round(avg_token_latency, 4),
+    }
     """Check if the llama-server is reachable."""
     try:
         resp = requests.get(f"{server_url}/health", timeout=timeout)
@@ -387,126 +708,17 @@ def get_live_generation_metrics(server_url: str, timeout: int = 2) -> Dict[str, 
     return get_live_llama_status(server_url, timeout=timeout)
 
 
-def send_completion(server_url: str, prompt: str, model_name: str = "benchmark-model",
-                    context_size: int = 4096, max_tokens: int = 512,
-                    temperature: float = 0.7, top_p: float = 0.9,
-                    timeout: int = DEFAULT_TIMEOUT) -> Optional[Dict[str, Any]]:
-    """
-    Send a prompt to the llama-server and return the response with metadata.
-    
-    Returns None if the server does not respond.
-    """
-    payload = {
-        "model": model_name,
-        "prompt": prompt,
-        "n_predict": max_tokens,
-        "temperature": temperature,
-        "top_p": top_p,
-        "n_ctx": context_size,
-        "stream": False,
-        "cache_prompt": True,
-    }
-
-    try:
-        logger.info("Sending prompt to %s (model: %s)", server_url, model_name)
-        start_time = time.perf_counter()
-
-        resp = requests.post(
-            f"{server_url}/completion",
-            json=payload,
-            timeout=timeout,
-            headers={"Content-Type": "application/json"}
-        )
-
-        elapsed = time.perf_counter() - start_time
-
-        if resp.status_code != 200:
-            logger.error("Server response error %d: %s", resp.status_code, resp.text[:500])
-            return None
-
-        data = resp.json()
-        logger.debug("Server response keys: %s", list(data.keys()))
-        logger.debug("Timings: %s", data.get("timings", {}))
-
-        timings = data.get("timings", {})
-
-        # Prompt tokens: check multiple possible field names
-        prompt_tokens = (
-            timings.get("prompt_n")
-            or timings.get("prompt_eval_count")
-            or data.get("tokens_evaluated")
-            or 0
-        )
-
-        # Completion tokens: check multiple possible field names
-        completion_tokens = (
-            timings.get("eval_count")
-            or timings.get("predicted_n")
-            or data.get("tokens_predicted")
-            or 0
-        )
-
-        # Prompt duration in nanoseconds
-        prompt_eval_duration_ns = (
-            timings.get("prompt_eval_duration")
-            or timings.get("prompt_ms", 0) * 1e6
-            or 0
-        )
-
-        # Generation duration in nanoseconds
-        eval_duration_ns = (
-            timings.get("eval_duration")
-            or timings.get("predicted_ms", 0) * 1e6
-            or 0
-        )
-
-        # Calculate tokens/s
-        prompt_tps = prompt_tokens / (prompt_eval_duration_ns / 1e9) if prompt_eval_duration_ns > 0 else 0.0
-        generation_tps = completion_tokens / (eval_duration_ns / 1e9) if eval_duration_ns > 0 else 0.0
-
-        # First token latency & average token latency
-        first_token_latency = None
-        avg_token_latency = 0.0
-        if completion_tokens > 0:
-            generation_time_s = eval_duration_ns / 1e9 if eval_duration_ns > 0 else elapsed
-            first_token_latency = (prompt_eval_duration_ns / 1e9) * 1000 if prompt_eval_duration_ns > 0 else elapsed * 1000
-            avg_token_latency = (generation_time_s * 1000) / completion_tokens
-
-        result = {
-            "content": data.get("content", ""),
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
-            "prompt_tokens_per_second": round(prompt_tps, 2),
-            "generation_tokens_per_second": round(generation_tps, 2),
-            "total_duration": elapsed,
-            "first_token_latency": round(first_token_latency, 2) if first_token_latency else None,
-            "avg_token_latency": round(avg_token_latency, 4),
-        }
-
-        logger.info("Response received: %d prompt tokens, %d generation tokens, %.2f tok/s",
-                     result["prompt_tokens"], result["completion_tokens"],
-                     result["generation_tokens_per_second"])
-
-        return result
-
-    except requests.exceptions.ConnectionError:
-        logger.error("Connection to server failed: %s", server_url)
-        return None
-    except requests.exceptions.Timeout:
-        logger.error("Timeout sending to %s", server_url)
-        return None
-    except Exception as e:
-        logger.error("Unexpected error: %s", e)
-        return None
-
-
 def send_chat_completion(server_url: str, messages: list, model_name: str = "benchmark-model",
                          context_size: int = 4096, max_tokens: int = 512,
                          temperature: float = 0.7, top_p: float = 0.9,
-                         timeout: int = DEFAULT_TIMEOUT) -> Optional[Dict[str, Any]]:
+                         timeout: int = DEFAULT_TIMEOUT,
+                         on_token: Optional[Callable[[str, str], None]] = None) -> Optional[Dict[str, Any]]:
     """
     Send a chat completion (OpenAI-compatible).
+
+    When `on_token(kind, text)` is provided, the request is streamed via SSE and
+    each generated chunk is forwarded live. `kind` is "thinking" (reasoning_content)
+    or "content" (final answer).
     """
     payload = {
         "model": model_name,
@@ -515,13 +727,69 @@ def send_chat_completion(server_url: str, messages: list, model_name: str = "ben
         "temperature": temperature,
         "top_p": top_p,
         "n_ctx": context_size,
-        "stream": False,
     }
 
     try:
         logger.info("Sending chat request to %s", server_url)
         start_time = time.perf_counter()
 
+        if on_token is not None:
+            # ── Streaming chat mode ──
+            payload["stream"] = True
+            payload["reasoning_format"] = "deepseek"
+            content_parts: list[str] = []
+            thinking_parts: list[str] = []
+            usage: dict = {}
+            timings: dict = {}
+
+            with requests.post(
+                f"{server_url}/v1/chat/completions",
+                json=payload,
+                timeout=timeout,
+                headers={"Content-Type": "application/json"},
+                stream=True,
+            ) as resp:
+                if resp.status_code != 200:
+                    logger.error("Chat API error %d: %s", resp.status_code, resp.text[:500])
+                    return None
+                for event in _parse_sse_stream(resp):
+                    if not isinstance(event, dict):
+                        continue
+                    choices = event.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta", {}) if isinstance(choices[0], dict) else {}
+                    if not isinstance(delta, dict):
+                        delta = {}
+                    rc = delta.get("reasoning_content") or delta.get("reasoning")
+                    if rc:
+                        thinking_parts.append(rc)
+                        on_token("thinking", rc)
+                    cc = delta.get("content")
+                    if cc:
+                        content_parts.append(cc)
+                        on_token("content", cc)
+                    if event.get("usage"):
+                        usage = event.get("usage", {}) or {}
+                    if event.get("timings"):
+                        timings = event.get("timings", {}) or {}
+
+            elapsed = time.perf_counter() - start_time
+            on_token("status", f"[chat stream complete: {elapsed:.2f}s]")
+            content = "".join(content_parts)
+            thinking = "".join(thinking_parts)
+            prompt_tokens = usage.get("prompt_tokens", 0)
+            completion_tokens = usage.get("completion_tokens", 0)
+            if timings:
+                p_n = timings.get("prompt_n", 0) or timings.get("prompt_eval_count", 0)
+                e_c = timings.get("eval_count", 0) or timings.get("predicted_n", 0)
+                if p_n > 0:
+                    prompt_tokens = p_n
+                if e_c > 0:
+                    completion_tokens = e_c
+            return _build_chat_result(content, thinking, prompt_tokens, completion_tokens, timings, elapsed)
+
+        payload["stream"] = False
         resp = requests.post(
             f"{server_url}/v1/chat/completions",
             json=payload,
@@ -536,52 +804,15 @@ def send_chat_completion(server_url: str, messages: list, model_name: str = "ben
             return None
 
         data = resp.json()
-        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        message = data.get("choices", [{}])[0].get("message", {}) if data.get("choices") else {}
+        content = message.get("content", "") if isinstance(message, dict) else ""
+        thinking = message.get("reasoning_content", "") if isinstance(message, dict) else ""
         usage = data.get("usage", {})
 
         prompt_tokens = usage.get("prompt_tokens", 0)
         completion_tokens = usage.get("completion_tokens", 0)
-        total_tokens = usage.get("total_tokens", 0)
-
-        prompt_tps = prompt_tokens / elapsed if elapsed > 0 else 0.0
-        generation_tps = completion_tokens / elapsed if elapsed > 0 else 0.0
-        avg_token_latency = (elapsed * 1000) / completion_tokens if completion_tokens > 0 else 0.0
-        first_token_latency = None
-
         timings = data.get("timings", {})
-        if timings:
-            prompt_eval_ns = timings.get("prompt_eval_duration", 0) or timings.get("prompt_ms", 0) * 1e6
-            eval_ns = timings.get("eval_duration", 0) or timings.get("predicted_ms", 0) * 1e6
-            p_n = timings.get("prompt_n", 0) or timings.get("prompt_eval_count", 0)
-            e_c = timings.get("eval_count", 0) or timings.get("predicted_n", 0)
-            if p_n > 0:
-                prompt_tokens = p_n
-            if e_c > 0:
-                completion_tokens = e_c
-                total_tokens = prompt_tokens + completion_tokens
-            if eval_ns > 0 and completion_tokens > 0:
-                generation_tps = completion_tokens / (eval_ns / 1e9)
-                avg_token_latency = (eval_ns / 1e6) / completion_tokens
-            if prompt_eval_ns > 0:
-                prompt_tps = prompt_tokens / (prompt_eval_ns / 1e9)
-                first_token_latency = prompt_eval_ns / 1e6
-
-        result = {
-            "content": content,
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": total_tokens,
-            "prompt_tokens_per_second": round(prompt_tps, 2),
-            "generation_tokens_per_second": round(generation_tps, 2),
-            "total_duration": elapsed,
-            "first_token_latency": round(first_token_latency, 2) if first_token_latency else None,
-            "avg_token_latency": round(avg_token_latency, 4),
-        }
-
-        logger.info("Chat response: %d prompt tokens, %d generation tokens",
-                     result["prompt_tokens"], result["completion_tokens"])
-
-        return result
+        return _build_chat_result(content, thinking, prompt_tokens, completion_tokens, timings, elapsed)
 
     except requests.exceptions.ConnectionError:
         logger.error("Connection to server failed: %s", server_url)
@@ -592,6 +823,51 @@ def send_chat_completion(server_url: str, messages: list, model_name: str = "ben
     except Exception as e:
         logger.error("Unexpected error: %s", e)
         return None
+
+
+def _build_chat_result(content: str, thinking: str, prompt_tokens: int,
+                       completion_tokens: int, timings: dict, elapsed: float) -> Dict[str, Any]:
+    """Build normalized result dict for chat completion responses."""
+    total_tokens = prompt_tokens + completion_tokens
+    prompt_tps = prompt_tokens / elapsed if elapsed > 0 else 0.0
+    generation_tps = completion_tokens / elapsed if elapsed > 0 else 0.0
+    avg_token_latency = (elapsed * 1000) / completion_tokens if completion_tokens > 0 else 0.0
+    first_token_latency = None
+
+    if timings:
+        prompt_eval_ns = timings.get("prompt_eval_duration", 0) or timings.get("prompt_ms", 0) * 1e6
+        eval_ns = timings.get("eval_duration", 0) or timings.get("predicted_ms", 0) * 1e6
+        p_n = timings.get("prompt_n", 0) or timings.get("prompt_eval_count", 0)
+        e_c = timings.get("eval_count", 0) or timings.get("predicted_n", 0)
+        if p_n > 0:
+            prompt_tokens = p_n
+        if e_c > 0:
+            completion_tokens = e_c
+            total_tokens = prompt_tokens + completion_tokens
+        if eval_ns > 0 and completion_tokens > 0:
+            generation_tps = completion_tokens / (eval_ns / 1e9)
+            avg_token_latency = (eval_ns / 1e6) / completion_tokens
+        if prompt_eval_ns > 0:
+            prompt_tps = prompt_tokens / (prompt_eval_ns / 1e9)
+            first_token_latency = prompt_eval_ns / 1e6
+
+    result = {
+        "content": content,
+        "thinking": thinking,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "prompt_tokens_per_second": round(prompt_tps, 2),
+        "generation_tokens_per_second": round(generation_tps, 2),
+        "total_duration": elapsed,
+        "first_token_latency": round(first_token_latency, 2) if first_token_latency else None,
+        "avg_token_latency": round(avg_token_latency, 4),
+    }
+
+    logger.info("Chat response: %d prompt tokens, %d generation tokens",
+                 result["prompt_tokens"], result["completion_tokens"])
+
+    return result
 
 
 def get_system_metrics() -> Dict[str, Optional[float]]:

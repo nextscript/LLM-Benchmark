@@ -26,6 +26,7 @@ Benchmark various models, store all measurements, and get an automatic ranking -
 - **Benchmark Abort**: Cancel running benchmarks at any time
 - **Benchmark Start**: Configure model, server URL, context size, and prompts
 - **Live Status**: Track the benchmark in real-time with animation and progress bar
+- **llama.cpp KI Output Console**: Click the terminal icon in the Live Status header to open a console-styled modal that streams the model's live output (thinking/reasoning, content writing, and status events) - SSE-based streaming of `/completion` and `/v1/chat/completions` with `reasoning_format=deepseek`
 - **Total Elapsed Per Result**: The wall-clock time of each benchmark run is calculated from the run's start/finish timestamps and stored as `elapsed_seconds` (also available in the API and in the database) - basis for the Fastest Model (Elapsed) cards on the Dashboard and the Comparisons page
 - **Results Elapsed Column**: Each row shows the overall benchmark elapsed time (e.g. `MM:SS` or `H:MM:SS`) - allows sorting to quickly find the fastest model
 - **Ranking Elapsed Column**: The ranking table also shows total elapsed time per model, so the fastest model by wall-clock time is clearly visible
@@ -453,6 +454,7 @@ LLM-Benchmark/
 | POST | `/api/benchmark/start` | Start benchmark |
 | GET | `/api/benchmark/status/{id}` | Live status |
 | POST | `/api/benchmark/abort/{id}` | Abort benchmark |
+| GET | `/api/benchmark/logs/{run_id}` | Captured llama.cpp KI output (thinking/content/status) and log lines for a run |
 | GET | `/api/results` | All results (JSON) |
 | GET | `/api/results/{id}` | Single result |
 | DELETE | `/api/results/{id}` | Delete result |

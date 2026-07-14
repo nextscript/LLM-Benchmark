@@ -120,8 +120,11 @@
 
     <div class="col-lg-5">
         <div class="card border-secondary mb-3" id="statusCard" style="display:none;">
-            <div class="card-header border-secondary">
-                <i class="bi bi-activity"></i> Live Status
+            <div class="card-header border-secondary d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-activity"></i> Live Status</span>
+                <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2" id="openConsoleBtn" title="Show llama.cpp console output" onclick="openConsoleModal()">
+                    <i class="bi bi-terminal"></i>
+                </button>
             </div>
             <div class="card-body">
                 <div class="d-flex align-items-center mb-3">
@@ -171,6 +174,38 @@
             <div class="card-body d-flex align-items-center">
                 <span class="spinner-border spinner-border-sm me-2" id="healthSpinner"></span>
                 <span id="healthText">Checking connection...</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="consoleModal" tabindex="-1" aria-labelledby="consoleModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content bg-dark text-light border-secondary">
+            <div class="modal-header border-secondary py-2">
+                <h6 class="modal-title" id="consoleModalLabel">
+                    <i class="bi bi-terminal-fill text-success"></i> llama.cpp KI Output
+                    <small class="text-muted">Thinking / Writing</small>
+                </h6>
+                <div class="d-flex align-items-center gap-2">
+                    <div class="form-check form-switch mb-0">
+                        <input class="form-check-input" type="checkbox" id="consoleAutoscroll" checked>
+                        <label class="form-check-label small text-muted" for="consoleAutoscroll">Autoscroll</label>
+                    </div>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+            </div>
+            <div class="modal-body p-0">
+                <pre id="consoleOutput" class="console-output m-0 p-3"><span class="text-muted">Waiting for output...</span></pre>
+            </div>
+            <div class="modal-footer border-secondary py-2">
+                <small class="text-muted me-auto" id="consoleStatus">-</small>
+                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="copyConsoleOutput()">
+                    <i class="bi bi-clipboard"></i> Copy
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="clearConsoleOutput()">
+                    <i class="bi bi-eraser"></i> Clear
+                </button>
             </div>
         </div>
     </div>

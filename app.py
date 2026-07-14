@@ -36,6 +36,43 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Benchmark status (running benchmarks)
+active_benchmarks: dict = {}
+abort_flags: dict = {}  # {run_id: True/False}
+live_decoded_baselines: dict = {}
+
+# In-memory log buffer for the active benchmark run (per run_id)
+active_benchmark_logs: dict = {}
+# In-memory live KI stream buffer: run_id -> list of {"kind": "thinking"|"content"|"status", "text": str}
+active_benchmark_streams: dict = {}
+_log_thread_local = threading.local()
+
+
+class RunLogHandler(logging.Handler):
+    """Captures log records emitted from the benchmark thread into active_benchmark_logs[run_id]."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        run_id = getattr(_log_thread_local, "run_id", None)
+        if run_id is None:
+            return
+        try:
+            line = self.format(record)
+            buf = active_benchmark_logs.get(run_id)
+            if buf is None:
+                buf = []
+                active_benchmark_logs[run_id] = buf
+            buf.append(line)
+            # Cap buffer to avoid unbounded growth
+            if len(buf) > 5000:
+                del buf[: len(buf) - 5000]
+        except Exception:
+            pass
+
+
+_run_log_handler = RunLogHandler()
+_run_log_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+logging.getLogger().addHandler(_run_log_handler)
+
 # App initialization
 app = FastAPI(title="LLM Benchmark GUI", version="1.0.0")
 
@@ -47,11 +84,6 @@ os.makedirs(os.path.join(static_dir, "css"), exist_ok=True)
 os.makedirs(os.path.join(static_dir, "js"), exist_ok=True)
 os.makedirs(os.path.join(static_dir, "sounds"), exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
-
-# Benchmark status (running benchmarks)
-active_benchmarks: dict = {}
-abort_flags: dict = {}  # {run_id: True/False}
-live_decoded_baselines: dict = {}
 
 
 def parse_decimal_form_value(value: str | float | int, field_name: str, min_value: float, max_value: float) -> float:
@@ -196,6 +228,23 @@ async def start_benchmark(
 
     # Background thread for benchmark
     def _run_benchmark():
+        _log_thread_local.run_id = run_id
+        active_benchmark_logs[run_id] = []
+        active_benchmark_streams[run_id] = []
+
+        def _on_token(kind: str, text: str) -> None:
+            buf = active_benchmark_streams.get(run_id)
+            if buf is None:
+                buf = []
+                active_benchmark_streams[run_id] = buf
+            # Batch small chunks into existing buffer entry for the same kind to keep memory bounded
+            if buf and buf[-1]["kind"] == kind and len(buf[-1]["text"]) < 2000:
+                buf[-1]["text"] += text
+            else:
+                buf.append({"kind": kind, "text": text})
+            if len(buf) > 20000:
+                del buf[: len(buf) - 20000]
+
         try:
             update_run_status(run_id, "running", 10, "Running benchmarks...")
 
@@ -214,6 +263,7 @@ async def start_benchmark(
                     tokens_per_second=tps, decoded_tokens=decoded
                 ),
                 abort_flag=lambda: abort_flags.get(run_id, False),
+                on_token=_on_token,
             )
 
             if results:
@@ -297,6 +347,34 @@ async def abort_benchmark(run_id: int):
     # Update status immediately
     update_run_status(run_id, "failed", 0, "Aborted", "Benchmark was aborted by user.")
     return {"message": "Benchmark is being aborted..."}
+
+
+@app.get("/api/benchmark/logs/{run_id}")
+async def get_benchmark_logs(run_id: int):
+    """Return the in-memory captured log lines and live KI stream events for a benchmark run."""
+    run = get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    lines = active_benchmark_logs.get(run_id, [])
+    stream = active_benchmark_streams.get(run_id, [])
+    # Stream events are returned as formatted lines for display, preserving kind via prefix
+    stream_lines = []
+    for ev in stream:
+        kind = ev.get("kind", "content")
+        text = ev.get("text", "")
+        if kind == "thinking":
+            stream_lines.append(f"[THINKING] {text}")
+        elif kind == "status":
+            stream_lines.append(f"[STATUS] {text}")
+        else:
+            stream_lines.append(text)
+    return {
+        "run_id": run_id,
+        "status": run["status"],
+        "lines": stream_lines,
+        "total": len(stream_lines),
+        "log_lines": list(lines),
+    }
 
 
 @app.get("/api/results")

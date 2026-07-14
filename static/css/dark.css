@@ -626,3 +626,52 @@ body {
         padding: 0.75rem;
     }
 }
+
+/* ── Console Output Modal ── */
+
+.console-output {
+    background: #0b0f14;
+    color: #c8d3e0;
+    font-family: "Cascadia Code", "JetBrains Mono", "Fira Code", Consolas, "Courier New", monospace;
+    font-size: 0.8rem;
+    line-height: 1.35;
+    max-height: 60vh;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    border-radius: 0;
+}
+
+.console-output .log-info { color: #c8d3e0; }
+.console-output .log-warning { color: #ffc107; }
+.console-output .log-error { color: #f56565; }
+.console-output .log-debug { color: #6c757d; }
+.console-output .log-critical { color: #ff4d4f; font-weight: bold; }
+.console-output .log-timestamp { color: #6c757d; }
+.console-output .log-level { color: #38bdf8; }
+.console-output .log-logger { color: #a78bfa; }
+.console-output .log-thinking { color: #c084fc; font-style: italic; }
+.console-output .log-status { color: #38bdf8; font-weight: bold; }
+
+#consoleModal .modal-content {
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5), 0 0.5rem 1rem rgba(0, 0, 0, 0.6);
+}
+
+#consoleModal .modal-body {
+    background: #0b0f14;
+}
+
+#consoleOutput::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+#consoleOutput::-webkit-scrollbar-track {
+    background: #0b0f14;
+}
+#consoleOutput::-webkit-scrollbar-thumb {
+    background: #2d3748;
+    border-radius: 5px;
+}
+#consoleOutput::-webkit-scrollbar-thumb:hover {
+    background: #4a5568;
+}

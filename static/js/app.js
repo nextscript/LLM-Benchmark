@@ -492,6 +492,14 @@ function initBenchmarkForm() {
         });
     }
 
+    // Stop console log polling when the modal is closed
+    const consoleModalEl = document.getElementById('consoleModal');
+    if (consoleModalEl) {
+        consoleModalEl.addEventListener('hidden.bs.modal', function() {
+            stopConsolePolling();
+        });
+    }
+
     loadLlamaConfig(false);
     
     form.addEventListener('submit', async function(e) {
@@ -2242,6 +2250,143 @@ function startElapsedTimer() {
     
     // Interval is cleared on stop
     window._elapsedInterval = interval;
+}
+
+// ── llama.cpp Console Output Modal ──
+
+const CONSOLE_LOG_POLL_MS = 1000;
+let consolePollInterval = null;
+let consoleLastShownCount = 0;
+let consoleModalInstance = null;
+let consoleWasAutoOpen = false;
+
+function ensureConsoleModal() {
+    const el = document.getElementById('consoleModal');
+    if (!el) return null;
+    if (consoleModalInstance) return consoleModalInstance;
+    if (window.bootstrap && window.bootstrap.Modal) {
+        consoleModalInstance = new window.bootstrap.Modal(el);
+    }
+    return consoleModalInstance;
+}
+
+function openConsoleModal() {
+    const modal = ensureConsoleModal();
+    if (!modal) return;
+    consoleLastShownCount = 0;
+    const out = document.getElementById('consoleOutput');
+    if (out) out.innerHTML = '<span class="text-muted">Waiting for output...</span>';
+    modal.show();
+    const runId = window._currentRunId;
+    const statusEl = document.getElementById('consoleStatus');
+    if (statusEl) statusEl.textContent = runId ? `Run #${runId}` : 'No active run';
+    startConsolePolling();
+}
+
+function startConsolePolling() {
+    stopConsolePolling();
+    pollConsoleLogs();
+    consolePollInterval = setInterval(pollConsoleLogs, CONSOLE_LOG_POLL_MS);
+}
+
+function stopConsolePolling() {
+    if (consolePollInterval) {
+        clearInterval(consolePollInterval);
+        consolePollInterval = null;
+    }
+}
+
+async function pollConsoleLogs() {
+    const runId = window._currentRunId;
+    const out = document.getElementById('consoleOutput');
+    const statusEl = document.getElementById('consoleStatus');
+    if (!out) return;
+    if (!runId) {
+        if (statusEl) statusEl.textContent = 'No active run';
+        return;
+    }
+    try {
+        const resp = await fetch(`/api/benchmark/logs/${runId}`);
+        if (!resp.ok) {
+            if (statusEl) statusEl.textContent = `Error ${resp.status}`;
+            return;
+        }
+        const data = await resp.json();
+        const lines = data.lines || [];
+        if (statusEl) statusEl.textContent = `Run #${runId}  •  ${data.status}  •  ${lines.length} lines`;
+
+        // Only append new lines
+        if (lines.length > consoleLastShownCount) {
+            const newLines = lines.slice(consoleLastShownCount);
+            consoleLastShownCount = lines.length;
+            if (consoleLastShownCount === newLines.length) {
+                // First load: replace placeholder
+                out.innerHTML = '';
+            }
+            for (const line of newLines) {
+                out.insertAdjacentHTML('beforeend', formatConsoleLine(line) + '\n');
+            }
+            const auto = document.getElementById('consoleAutoscroll');
+            if (!auto || auto.checked) {
+                out.scrollTop = out.scrollHeight;
+            }
+        }
+
+        // Stop polling when run is no longer active
+        if (data.status && !['waiting', 'running'].includes(data.status)) {
+            stopConsolePolling();
+        }
+    } catch (err) {
+        const statusEl2 = document.getElementById('consoleStatus');
+        if (statusEl2) statusEl2.textContent = 'Connection error';
+    }
+}
+
+function formatConsoleLine(line) {
+    if (!line) return '';
+    const escLine = esc(line);
+
+    // Live KI stream events: prefix markers from the backend
+    if (line.startsWith('[THINKING]')) {
+        return `<span class="log-thinking">${escLine}</span>`;
+    }
+    if (line.startsWith('[STATUS]')) {
+        return `<span class="log-status">${escLine}</span>`;
+    }
+
+    // Standard log line: "2025-01-01 12:00:00,123 [LEVEL] logger: message"
+    let level = 'info';
+    const m = line.match(/\[(INFO|WARNING|ERROR|DEBUG|CRITICAL)\]/);
+    if (m) level = m[1].toLowerCase();
+    return `<span class="log-${level}">${escLine}</span>`;
+}
+
+function copyConsoleOutput() {
+    const out = document.getElementById('consoleOutput');
+    if (!out) return;
+    const text = out.innerText;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => flashConsoleButton('Copy'));
+    } else {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); } catch (e) {}
+        document.body.removeChild(ta);
+        flashConsoleButton('Copy');
+    }
+}
+
+function clearConsoleOutput() {
+    const out = document.getElementById('consoleOutput');
+    if (out) out.innerHTML = '<span class="text-muted">Cleared.</span>';
+    consoleLastShownCount = 0;
+    flashConsoleButton('Clear');
+}
+
+function flashConsoleButton(label) {
+    // no-op placeholder for future toast
 }
 
 // ── Reset benchmark form for new run ──

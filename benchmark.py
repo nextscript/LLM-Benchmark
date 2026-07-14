@@ -1505,7 +1505,8 @@ PROMPTS.update(_active_songwriting_prompts())
 
 def _send_prompt(server_url: str, model_name: str, prompt_text: str,
                  context_size: int, max_tokens: int,
-                 temperature: float, top_p: float) -> Optional[Dict[str, Any]]:
+                 temperature: float, top_p: float,
+                 on_token: Optional[Callable[[str, str], None]] = None) -> Optional[Dict[str, Any]]:
     result = send_completion(
         server_url=server_url,
         prompt=prompt_text,
@@ -1514,6 +1515,7 @@ def _send_prompt(server_url: str, model_name: str, prompt_text: str,
         max_tokens=max_tokens,
         temperature=temperature,
         top_p=top_p,
+        on_token=on_token,
     )
     if result is None:
         logger.info("Fallback: Trying /v1/chat/completions")
@@ -1526,6 +1528,7 @@ def _send_prompt(server_url: str, model_name: str, prompt_text: str,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
+            on_token=on_token,
         )
     return result
 
@@ -1533,7 +1536,8 @@ def _send_prompt(server_url: str, model_name: str, prompt_text: str,
 def run_single_prompt(server_url: str, model_name: str, prompt_key: str,
                       context_size: int = 4096, max_tokens: int = 512,
                       temperature: float = 0.7, top_p: float = 0.9,
-                      enable_self_validation: bool = True) -> Optional[Dict[str, Any]]:
+                      enable_self_validation: bool = True,
+                      on_token: Optional[Callable[[str, str], None]] = None) -> Optional[Dict[str, Any]]:
     prompt = PROMPTS.get(prompt_key)
     if not prompt:
         logger.error("Unknown prompt key: %s", prompt_key)
@@ -1542,9 +1546,13 @@ def run_single_prompt(server_url: str, model_name: str, prompt_key: str,
     logger.info("Starting prompt '%s' for model '%s'", prompt["name"], model_name)
     metrics = get_system_metrics()
 
+    if on_token:
+        on_token("status", f"── Run 1: {prompt['name']} ──")
+
     # ── Run 1: Blind prompt ──
     run1_result = _send_prompt(server_url, model_name, prompt["text"],
-                               context_size, max_tokens, temperature, top_p)
+                               context_size, max_tokens, temperature, top_p,
+                               on_token=on_token)
     if run1_result is None:
         logger.error("Run 1 failed for prompt '%s'", prompt["name"])
         # Return failed result instead of None
@@ -1593,8 +1601,11 @@ def run_single_prompt(server_url: str, model_name: str, prompt_key: str,
             f"{prompt['self_validation_hint']}\n\n"
             f"Provide your improved final answer below."
         )
+        if on_token:
+            on_token("status", "── Run 2: Self-Validation ──")
         run2_result = _send_prompt(server_url, model_name, validation_prompt,
-                                   context_size, max_tokens, temperature, top_p)
+                                   context_size, max_tokens, temperature, top_p,
+                                   on_token=on_token)
         if run2_result:
             run2_content = run2_result.get("content", "")
         else:
@@ -1735,7 +1746,8 @@ def run_benchmark(model_name: str, server_url: str, prompt_keys: List[str],
                   num_runs: int = 1,
                   enable_self_validation: bool = True,
                   on_progress: Optional[Callable[[int, str, float, int], None]] = None,
-                  abort_flag: Optional[Callable[[], bool]] = None) -> List[Dict[str, Any]]:
+                  abort_flag: Optional[Callable[[], bool]] = None,
+                  on_token: Optional[Callable[[str, str], None]] = None) -> List[Dict[str, Any]]:
     all_results = []
 
     if not check_health(server_url):
@@ -1770,6 +1782,7 @@ def run_benchmark(model_name: str, server_url: str, prompt_keys: List[str],
                 temperature=temperature,
                 top_p=top_p,
                 enable_self_validation=enable_self_validation,
+                on_token=on_token,
             )
 
             if result:
