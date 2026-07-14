@@ -22,6 +22,8 @@ def migrate_db():
         for stmt in [
             "ALTER TABLE benchmark_runs ADD COLUMN tokens_per_second REAL DEFAULT 0",
             "ALTER TABLE benchmark_runs ADD COLUMN decoded_tokens INTEGER DEFAULT 0",
+            "ALTER TABLE benchmark_runs ADD COLUMN elapsed_seconds REAL",
+            "ALTER TABLE benchmark_results ADD COLUMN elapsed_seconds REAL",
             "ALTER TABLE benchmark_results ADD COLUMN format_score REAL DEFAULT 50",
             "ALTER TABLE benchmark_results ADD COLUMN consistency_score REAL DEFAULT 50",
             "ALTER TABLE benchmark_results ADD COLUMN run1_quality_score REAL DEFAULT 0",
@@ -215,9 +217,18 @@ def update_run_status(run_id: int, status: str, progress: Optional[int] = None,
     conn = get_connection()
     try:
         if status in ("finished", "failed"):
+            now = datetime.utcnow().isoformat()
+            row = conn.execute("SELECT started_at FROM benchmark_runs WHERE id=?", (run_id,)).fetchone()
+            elapsed_seconds = None
+            if row and row["started_at"]:
+                try:
+                    started = datetime.fromisoformat(row["started_at"].replace("Z", ""))
+                    elapsed_seconds = (datetime.utcnow() - started).total_seconds()
+                except (ValueError, TypeError):
+                    elapsed_seconds = None
             conn.execute(
-                "UPDATE benchmark_runs SET status=?, progress=?, current_step=?, finished_at=?, error_message=? WHERE id=?",
-                (status, progress or 100, current_step, datetime.utcnow().isoformat(), error_message, run_id)
+                "UPDATE benchmark_runs SET status=?, progress=?, current_step=?, finished_at=?, error_message=?, elapsed_seconds=? WHERE id=?",
+                (status, progress or 100, current_step, now, error_message, elapsed_seconds, run_id)
             )
         else:
             updates = ["status=?", "progress=?", "current_step=?"]
@@ -369,11 +380,23 @@ def get_all_results() -> List[Dict[str, Any]]:
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT br.*, m.name as model_path FROM benchmark_results br "
+            "SELECT br.*, m.name as model_path, br.elapsed_seconds AS elapsed_seconds "
+            "FROM benchmark_results br "
             "LEFT JOIN models m ON br.model_id = m.id "
             "ORDER BY br.final_score DESC, br.generation_tokens_per_second DESC, br.first_token_latency ASC"
         ).fetchall()
         results = [dict(r) for r in rows]
+        # Backfill elapsed_seconds from the matching benchmark_run when missing
+        run_cache: Dict[int, Any] = {}
+        for r in results:
+            if r.get("elapsed_seconds") is None and r.get("run_id"):
+                rid = r["run_id"]
+                if rid not in run_cache:
+                    row = conn.execute(
+                        "SELECT elapsed_seconds FROM benchmark_runs WHERE id=?", (rid,)
+                    ).fetchone()
+                    run_cache[rid] = row["elapsed_seconds"] if row else None
+                r["elapsed_seconds"] = run_cache[rid]
         # Add ranking place
         for i, r in enumerate(results):
             r["ranking_place"] = i + 1
@@ -582,6 +605,16 @@ def get_stats() -> Dict[str, Any]:
             "GROUP BY model_name ORDER BY avg_duration ASC LIMIT 1"
         ).fetchone()
         stats["fastest_model"] = dict(row) if row else None
+
+        # Fastest model by total elapsed run time (lowest elapsed_seconds)
+        row = conn.execute(
+            "SELECT model_name, AVG(elapsed_seconds) AS avg_elapsed, "
+            "MIN(elapsed_seconds) AS min_elapsed, COUNT(*) AS test_count "
+            "FROM benchmark_results "
+            "WHERE status='finished' AND elapsed_seconds IS NOT NULL AND elapsed_seconds > 0 "
+            "GROUP BY model_name ORDER BY avg_elapsed ASC LIMIT 1"
+        ).fetchone()
+        stats["fastest_elapsed_model"] = dict(row) if row else None
 
         # Get best coding model by badge count
         stats["best_coding_model"] = get_best_coding_model_by_badges()

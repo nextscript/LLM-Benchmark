@@ -26,11 +26,14 @@ Benchmark various models, store all measurements, and get an automatic ranking -
 - **Benchmark Abort**: Cancel running benchmarks at any time
 - **Benchmark Start**: Configure model, server URL, context size, and prompts
 - **Live Status**: Track the benchmark in real-time with animation and progress bar
+- **Total Elapsed Per Result**: The wall-clock time of each benchmark run is calculated from the run's start/finish timestamps and stored as `elapsed_seconds` (also available in the API and in the database) - basis for the Fastest Model (Elapsed) cards on the Dashboard and the Comparisons page
+- **Results Elapsed Column**: Each row shows the overall benchmark elapsed time (e.g. `MM:SS` or `H:MM:SS`) - allows sorting to quickly find the fastest model
+- **Ranking Elapsed Column**: The ranking table also shows total elapsed time per model, so the fastest model by wall-clock time is clearly visible
 - **Automatic Ranking**: Score calculation based on multiple dimensions
 - **SQLite Storage**: All results persist after restart
 - **Dark Theme**: Modern, eye-friendly design
 - **Completion Alert**: Sound + modal after benchmark completion
-- **Dashboard**: Clear statistics cards
+- **Dashboard**: Clear statistics cards including Fastest Model (Elapsed)
 - **Start Scripts**: One-click launch via `start.bat` (Windows) or `start.sh` (Linux/macOS)
 
 ---
@@ -121,6 +124,7 @@ The **Ranking** page shows all tested models sorted by:
 4. Highest stability
 
 Each model displays:
+- Total **Elapsed** time per result (wall-clock time of the run) for quickly finding the fastest model
 - Color-coded **general test badges** for Coding, Reasoning, Long Context, German Text, and JSON
 - Color-coded **programming language badges** showing coding proficiency per language
 - Color-coded **engine skill badges** showing game engine and graphics programming proficiency
@@ -134,6 +138,7 @@ The **Results** table shows all measured values:
 
 - Prompt/Generation Tokens
 - Tokens per second
+- Elapsed (total benchmark wall-clock time)
 - First Token Latency
 - Average Token Latency
 - General test badges with proficiency rating
@@ -148,7 +153,7 @@ Storage is history-safe: every benchmark result is inserted as a new row with it
 
 The **Comparisons** page provides deeper visual analysis:
 
-- **Best Model**, **Fastest Model**, and **Best Coding Model** cards based on the currently filtered results
+- **Best Model**, **Fastest Model (Elapsed)**, and **Best Coding Model** cards based on the currently filtered results. The Fastest Model card is determined by the lowest average `elapsed_seconds` of the run (i.e. the model that completed its benchmark in the shortest wall-clock time)
 - **Badge Scores by Model** canvas chart using the same good/medium/bad/none colors as the Results badges
 - **Blind Analysis vs. Self-Validation** canvas chart showing Run 1 score, Self-Validation score, and whether the final answer improved or got worse
 - **Run History by Model and Category** line chart showing whether repeated runs improved or regressed

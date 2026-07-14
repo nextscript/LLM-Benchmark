@@ -308,12 +308,13 @@ async function loadDashboardStats() {
             el('bestModel').textContent = '-';
         }
 
-        if (stats.fastest_model) {
-            const avgDuration = stats.fastest_model.avg_duration ? stats.fastest_model.avg_duration.toFixed(2) + 's' : '-';
-            const avgTps = stats.fastest_model.avg_gen_tps ? stats.fastest_model.avg_gen_tps.toFixed(1) + ' tok/s' : '-';
+        if (stats.fastest_elapsed_model) {
+            const avgElapsed = stats.fastest_elapsed_model.avg_elapsed != null ? formatElapsed(stats.fastest_elapsed_model.avg_elapsed) : '-';
+            const minElapsed = stats.fastest_elapsed_model.min_elapsed != null ? formatElapsed(stats.fastest_elapsed_model.min_elapsed) : '-';
+            const testCount = stats.fastest_elapsed_model.test_count || 0;
             el('fastestModel').innerHTML = `
-                <div>${esc(stats.fastest_model.model_name)}</div>
-                <small class="text-muted">${avgDuration} avg (${avgTps})</small>
+                <div>${esc(stats.fastest_elapsed_model.model_name)}</div>
+                <small class="text-muted">avg ${avgElapsed} (${testCount} tests, best ${minElapsed})</small>
             `;
         } else {
             el('fastestModel').textContent = '-';
@@ -1093,6 +1094,7 @@ async function loadResults() {
                     <td>${esc(r.prompt_name || '-')}</td>
                     <td>${capabilityBadges(allResults)}</td>
                     <td>${(r.generation_tokens_per_second || 0).toFixed(1)}</td>
+                    <td>${formatElapsed(r.elapsed_seconds)}</td>
                     <td class="${scoreClass(r.quality_score)}">${(r.quality_score || 0).toFixed(1)}</td>
                     <td class="${scoreClass(r.format_score)}">${(r.format_score || 0).toFixed(1)}</td>
                     <td class="${scoreClass(r.consistency_score)}">${(r.consistency_score || 0).toFixed(1)}</td>
@@ -1110,7 +1112,7 @@ async function loadResults() {
             `;
         }).join('');
     } catch (err) {
-        tbody.innerHTML = '<tr><td colspan="14" class="text-center text-danger">Error loading results.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="15" class="text-center text-danger">Error loading results.</td></tr>';
     }
 }
 
@@ -1146,6 +1148,7 @@ async function loadRanking() {
                     <td><strong>${esc(r.model_name)}</strong></td>
                     <td class="${scoreClass(finalScore)}"><strong>${finalScore.toFixed(1)}</strong></td>
                     <td>${(r.generation_tokens_per_second || 0).toFixed(1)}</td>
+                    <td>${formatElapsed(r.elapsed_seconds)}</td>
                     <td>${(r.prompt_tokens_per_second || 0).toFixed(1)}</td>
                     <td>${(r.first_token_latency || 0).toFixed(1)}</td>
                     <td class="${scoreClass(r.quality_score)}">${(r.quality_score || 0).toFixed(1)}</td>
@@ -1160,7 +1163,7 @@ async function loadRanking() {
         }).join('');
     } catch (err) {
         console.error('Ranking error:', err);
-        tbody.innerHTML = '<tr><td colspan="13" class="text-center text-danger">Error loading ranking.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="14" class="text-center text-danger">Error loading ranking.</td></tr>';
     }
 }
 
@@ -1258,7 +1261,8 @@ function renderComparisonSummary(results, runDeltas) {
 
 function renderComparisonLeaders(results) {
     const bestModel = bestModelByAverage(results, 'final_score', 'desc');
-    const fastestModel = bestModelByAverage(results, 'generation_tokens_per_second', 'desc');
+    const elapsedResults = results.filter(r => Number(r.elapsed_seconds) > 0);
+    const fastestModel = bestModelByAverage(elapsedResults, 'elapsed_seconds', 'asc');
     const bestCodingModel = bestModelByGoodBadges(results);
 
     renderLeaderCard('comparisonBestModel', bestModel, {
@@ -1266,11 +1270,10 @@ function renderComparisonLeaders(results) {
         mainLabel: 'avg score',
         secondaryMetric: 'test_count',
     });
-    renderLeaderCard('comparisonFastestModel', fastestModel, {
-        mainMetric: 'avg_generation_tokens_per_second',
-        mainLabel: 'avg tok/s',
-        secondaryMetric: 'avg_score',
-        secondaryLabel: 'avg score',
+    renderLeaderCardElapsed('comparisonFastestModel', fastestModel, {
+        mainLabel: 'avg elapsed',
+        secondaryMetric: 'avg_generation_tokens_per_second',
+        secondaryLabel: 'avg tok/s',
     });
     renderBadgeLeaderCard('comparisonBestCodingModel', bestCodingModel);
 }
@@ -1374,6 +1377,7 @@ function bestModelByAverage(results, field, direction = 'desc') {
         avg_score: avg(rows, 'final_score'),
         avg_generation_tokens_per_second: avg(rows, 'generation_tokens_per_second'),
         avg_total_duration: avg(rows, 'total_duration'),
+        avg_elapsed_seconds: avg(rows, 'elapsed_seconds'),
         value: avg(rows, field),
     }));
 
@@ -1392,6 +1396,25 @@ function renderLeaderCard(id, leader, options) {
     const mainValue = Number(leader[options.mainMetric] || 0).toFixed(1);
     const secondary = formatLeaderSecondary(leader, options);
 
+    el.innerHTML = `
+        <div class="comparison-leader-name">${esc(leader.model_name)}</div>
+        <div class="comparison-leader-metric">${mainValue} <span>${esc(options.mainLabel)}</span></div>
+        <div class="text-muted small">${secondary}</div>
+    `;
+}
+
+function renderLeaderCardElapsed(id, leader, options) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (!leader) {
+        el.innerHTML = '<div class="text-muted">No matching results.</div>';
+        return;
+    }
+    const elapsedVal = Number(leader.avg_elapsed_seconds || 0);
+    const mainValue = formatElapsed(elapsedVal);
+    const secondary = options.secondaryMetric && options.secondaryLabel
+        ? `${Number(leader[options.secondaryMetric] || 0).toFixed(1)} ${options.secondaryLabel} (${leader.test_count} results)`
+        : `${leader.test_count} result${leader.test_count === 1 ? '' : 's'}`;
     el.innerHTML = `
         <div class="comparison-leader-name">${esc(leader.model_name)}</div>
         <div class="comparison-leader-metric">${mainValue} <span>${esc(options.mainLabel)}</span></div>
@@ -2171,6 +2194,17 @@ function parseUtcDate(dateStr) {
         : `${dateStr}Z`;
     const date = new Date(normalized);
     return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatElapsed(seconds) {
+    if (seconds == null || isNaN(seconds)) return '-';
+    const total = Math.floor(Number(seconds));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    const mm = String(m).padStart(2, '0');
+    const ss = String(s).padStart(2, '0');
+    return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
 function formatStatus(status) {
