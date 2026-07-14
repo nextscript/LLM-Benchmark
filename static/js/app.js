@@ -315,7 +315,7 @@ async function loadDashboardStats() {
             const testCount = stats.fastest_elapsed_model.test_count || 0;
             el('fastestModel').innerHTML = `
                 <div>${esc(stats.fastest_elapsed_model.model_name)}</div>
-                <small class="text-muted">avg ${avgElapsed} (${testCount} tests, best ${minElapsed})</small>
+                <small class="text-muted">avg ${avgElapsed} (${testCount} tests)</small>
             `;
         } else {
             el('fastestModel').textContent = '-';
