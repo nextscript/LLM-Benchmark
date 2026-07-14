@@ -608,11 +608,12 @@ def get_stats() -> Dict[str, Any]:
 
         # Fastest model by total elapsed run time (lowest elapsed_seconds)
         row = conn.execute(
-            "SELECT model_name, AVG(elapsed_seconds) AS avg_elapsed, "
-            "MIN(elapsed_seconds) AS min_elapsed, COUNT(*) AS test_count "
-            "FROM benchmark_results "
-            "WHERE status='finished' AND elapsed_seconds IS NOT NULL AND elapsed_seconds > 0 "
-            "GROUP BY model_name ORDER BY avg_elapsed ASC LIMIT 1"
+            "SELECT br.model_name, AVG(r.elapsed_seconds) AS avg_elapsed, "
+            "MIN(r.elapsed_seconds) AS min_elapsed, COUNT(*) AS test_count "
+            "FROM benchmark_results br "
+            "JOIN benchmark_runs r ON br.run_id = r.id "
+            "WHERE br.status='finished' AND r.elapsed_seconds IS NOT NULL AND r.elapsed_seconds > 0 "
+            "GROUP BY br.model_name ORDER BY avg_elapsed ASC LIMIT 1"
         ).fetchone()
         stats["fastest_elapsed_model"] = dict(row) if row else None
 
