@@ -83,7 +83,8 @@ async def dashboard(request: Request):
 
 @app.get("/benchmark", response_class=HTMLResponse)
 async def benchmark_page(request: Request):
-    return templates.TemplateResponse(request, "benchmark.html")
+    default_server_url = os.environ.get("LLAMA_SERVER_URL", "http://127.0.0.1:8080")
+    return templates.TemplateResponse(request, "benchmark.html", {"default_server_url": default_server_url})
 
 
 @app.get("/results", response_class=HTMLResponse)

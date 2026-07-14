@@ -271,6 +271,7 @@ async function loadLlamaConfig(showErrors = true) {
 }
 
 function applyLlamaConfig(data) {
+    setInputValue('server_url', data.server_url);
     setInputValue('model_name', data.model_name);
     setInputValue('context_size', data.context_size);
     setInputValue('max_tokens', data.max_tokens);
